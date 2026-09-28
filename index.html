@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pump.fun Buy Decoder — version-tolerant, static (SSE Q23730)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 960px; margin: 0 auto; padding: 16px; line-height: 1.45; }
+  h1 { font-size: 1.4em; } h2 { font-size: 1.15em; margin-top: 1.8em; border-bottom: 1px solid #888; padding-bottom: 4px; }
+  textarea, input[type=text] { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 13px; }
+  textarea { min-height: 76px; }
+  button { padding: 6px 14px; margin: 6px 6px 6px 0; cursor: pointer; }
+  .card { border: 1px solid #888; border-radius: 8px; padding: 12px; margin: 10px 0; }
+  .ok { color: #0a7d00; } .warn { color: #a05a00; } .err { color: #b00020; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid #999; padding: 4px 8px; text-align: left; word-break: break-all; }
+  code { font-size: 12.5px; }
+  .muted { opacity: .75; font-size: .9em; }
+  #result { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 13px; }
+  .pill { display: inline-block; padding: 1px 10px; border-radius: 12px; font-weight: bold; font-size: 13px; }
+  .legacy { background: #fff3cd; color: #856404; } .new { background: #d4edda; color: #155724; }
+  .amb { background: #e2e3ff; color: #2c2f8f; } .bad { background: #f8d7da; color: #721c24; }
+</style>
+</head>
+<body>
+<h1>Pump.fun <code>buy</code> decoder <span class="muted">(100% static — no CDN, no requests)</span></h1>
+<p>Answers <b>Solana StackExchange Q23730</b> (“Can’t decode pumpfun buy ix”, 2025-11-10):
+a 24-byte legacy <code>buy</code> args buffer (8 discriminator + u64 + u64, no
+<code>track_volume</code>) throws under a strict coder built from the current on-chain
+IDL, while Solscan decodes the same bytes fine. Paste the args below — this page tries
+each known IDL revision by length and always shows the known fields plus raw bytes,
+so unknown future revisions degrade to “fields + tail” instead of throwing.</p>
+
+<h2>1. Paste instruction data <span class="muted">(base58, or hex with 0x)</span></h2>
+<textarea id="inp" placeholder="e.g. AJTQ2h9DXrBj4aok4gYm2HMBsTBEaLkwH"></textarea><br>
+<label class="muted"><input type="radio" name="enc" value="auto" checked> auto</label>
+<label class="muted"><input type="radio" name="enc" value="base58"> base58</label>
+<label class="muted"><input type="radio" name="enc" value="hex"> hex</label><br>
+<button id="btnDecode">Decode</button>
+<button id="btnS1">Sample: Q23730 legacy 24B</button>
+<button id="btnS2">Sample: new None/Some</button>
+<button id="btnS3">Sample: unknown tail</button>
+<div class="card"><div id="result">—</div></div>
+
+<h2>2. Known revisions <span class="muted">(program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P — address never changed; versioning is IDL-level)</span></h2>
+<table>
+<tr><th>Rev</th><th>Layout after 8-byte disc <code>66063d1201daebea</code></th><th>Len</th><th>Decoder label</th></tr>
+<tr><td>R1 legacy</td><td><code>amount: u64</code> + <code>max_sol_cost: u64</code>, no track field</td><td>24</td><td><span class="pill legacy">legacy-24B</span></td></tr>
+<tr><td>R2 option</td><td>+ <code>track_volume: Option&lt;bool&gt;</code> (tag 0x00=None, 0x01+value=Some)</td><td>25 / 26</td><td><span class="pill new">option-none-25B / option-some-26B</span></td></tr>
+<tr><td>R3 struct</td><td>+ <code>track_volume: OptionBool{bool}</code> (always 1 byte; current upstream IDL)</td><td>25</td><td><span class="pill new">struct-bool-25B</span></td></tr>
+<tr><td>R1+R2 overlap</td><td>25 B ending in 0x00 = R2 None <b>or</b> R3 false (identical bytes)</td><td>25</td><td><span class="pill amb">ambiguous-25B</span></td></tr>
+<tr><td>future</td><td>anything longer than 26 B</td><td>27+</td><td><span class="pill amb">tolerant-trailing</span> (fields + raw tail)</td></tr>
+</table>
+
+<h2>3. Why the strict decode throws (and why Solscan works)</h2>
+<ul>
+<li>A strict <code>BorshCoder(new IDL)</code> unconditionally reads the
+<code>track_volume</code> tag past byte 24. On a 24-byte legacy buffer that read runs
+past the end → <code>RangeError: offset out of range</code>. The data is fine; the
+layout assumption is wrong for that revision.</li>
+<li>Solscan decodes the same bytes because it pins an older IDL revision (or falls back
+by length) — same remedy this page implements explicitly: pick the layout from the
+buffer length instead of assuming the newest IDL.</li>
+<li>Second trap in the question’s snippet: the code base58-decodes by hand
+(<code>bs58.decode(...)</code>) <b>and</b> passes <code>'base58'</code> to
+<code>coder.instruction.decode</code>. Hand this page (or the coder) exactly one form:
+raw bytes with no encoding flag, or the base58 string with the flag — never both.
+The odd <code>&lt;=15 / Received 16</code> window in the report points at a 16-byte
+buffer reaching the failing read, i.e. shorter than the pasted 24-byte args, which is
+consistent with such a double-handling (or a truncated slice) upstream of the coder.</li>
+</ul>
+
+<h2>4. Self-test <span class="muted">(known vectors, runs offline)</span></h2>
+<button id="btnTest">Run self-test</button>
+<div class="card"><div id="testOut">—</div></div>
+
+<p class="muted">Sources: pump-fun/pump-public-docs idl/pump.json (buy disc
+[102,6,61,18,1,218,235,234], args amount/max_sol_cost/track_volume:OptionBool struct of bool;
+sell disc [51,230,133,164,1,127,131,173], args amount/min_sol_output);
+docs.rs carbon-pumpfun-decoder buy.rs + pumpfun Buy struct (amount, max_sol_cost, track_volume);
+SSE Q23730 (score 0, answers 0, 93 views; tx 3wTzXpYUyqfgW4bhyzE6Vk9qGbn8uVMrqwERngv4XsrMyTA8rZUua5xqbNPqaTSs6EGf868NZkgER1MUSqs7Ub9S on Solscan).
+Program address 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P. Nothing leaves this page.</p>
+
+<script src="decode.js"></script>
+<script>
+(function () {
+  "use strict";
+  var D = window.PumpDecode;
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function encMode() {
+    var r = document.querySelectorAll('input[name="enc"]');
+    for (var i = 0; i < r.length; i++) if (r[i].checked) return r[i].value;
+    return "auto";
+  }
+  function pill(layout) {
+    var cls = "bad";
+    if (layout === "legacy-24B") cls = "legacy";
+    else if (layout === "option-none-25B" || layout === "option-some-26B" || layout === "struct-bool-25B") cls = "new";
+    else if (layout === "ambiguous-25B" || layout === "tolerant-trailing") cls = "amb";
+    else if (layout === "sell-24B") cls = "new";
+    return '<span class="pill ' + cls + '">' + esc(layout || "error") + "</span>";
+  }
+  function doDecode() {
+    var r = D.decodeText(document.getElementById("inp").value, encMode());
+    var h = pill(r.layout) + " <span class='muted'>" + r.bytesLen + " byte(s), input " + esc(r.inputEncoding || "?") + "</span><br>";
+    h += "discriminator: <code>" + esc(r.discHex || "—") + "</code>" +
+      (r.ix ? " → <b>" + esc(r.ix) + "</b>" : " → <span class='err'>unknown ix</span>") + "<br>";
+    if (r.amount !== null) h += "amount: <code>" + esc(r.amount) + "</code><br>";
+    if (r.limit !== null) h += esc(r.limitName) + ": <code>" + esc(r.limit) + "</code><br>";
+    if (r.track !== null) h += "track_volume: <b>" + esc(r.track) + "</b> <span class='muted'>" + esc(r.trackDetail) + "</span><br>";
+    if (r.trailingHex) h += "trailing raw (" + (r.trailingHex.length / 2) + " B): <code>" + esc(r.trailingHex) + "</code><br>";
+    h += "raw hex (" + r.bytesLen + " B): <code>" + esc(r.bytesHex || "—") + "</code><br>";
+    r.warnings.forEach(function (w) { h += '<span class="warn">! ' + esc(w) + "</span><br>"; });
+    if (r.error) h += '<span class="err">ERROR: ' + esc(r.error) + "</span>";
+    else if (!r.warnings.length) h += '<span class="ok">Clean decode, no warnings.</span>';
+    document.getElementById("result").innerHTML = h;
+  }
+  function doTest() {
+    var cases = [
+      ["Q23730 legacy amount", (function () {
+        var r = D.decodeText("AJTQ2h9DXrBj4aok4gYm2HMBsTBEaLkwH", "base58");
+        return r.ok && r.layout === "legacy-24B" && r.amount === "4451588698927" && r.limit === "495000001" && r.track === "absent";
+      })()],
+      ["Q23730 discriminator", D.decodeText("AJTQ2h9DXrBj4aok4gYm2HMBsTBEaLkwH", "base58").discHex === "66063d1201daebea"],
+      ["option None ambiguous-25B", (function () {
+        var r = D.decodeText("i43WeUBGKA6VYKm3YqbYCnim79Wb7URF4j", "base58");
+        return r.ok && r.layout === "ambiguous-25B" && r.track === "ambiguous-none-or-false" && r.amount === "1000000";
+      })()],
+      ["option Some(true) 26B", (function () {
+        var r = D.decodeText("48CS5rNxJb99EyFoQFXVSj2oKg8ZbZa215Wp", "base58");
+        return r.ok && r.layout === "option-some-26B" && r.track === "true";
+      })()],
+      ["option Some(false) 26B", (function () {
+        var r = D.decodeText("48CS5rNxJb99EyFoQFXVSj2oKg8ZbZa215Wo", "base58");
+        return r.ok && r.layout === "option-some-26B" && r.track === "false";
+      })()],
+      ["struct true 25B", (function () {
+        var r = D.decodeText("i43WeUBGKA6VYKm3YqbYCnim79Wb7URF4k", "base58");
+        return r.ok && r.layout === "struct-bool-25B" && r.track === "true";
+      })()],
+      ["unknown tail tolerant", (function () {
+        var r = D.decodeText("23s1EunhJwrwGzc3TznQ34E79Me5dY7A2ESwhdL", "base58");
+        return r.ok && r.layout === "tolerant-trailing" && r.amount === "1000000" && r.trailingHex.length > 0 && r.warnings.length > 0;
+      })()],
+      ["bad tag flagged", (function () {
+        var r = D.decodeText("i43WeUBGKA6VYKm3YqbYCnim79Wb7URF4m", "base58");
+        return !r.ok && r.track === "invalid" && r.amount === "1000000";
+      })()],
+      ["sell hint", (function () {
+        var r = D.decodeText("5jRcjdixRUDSRB3fEHRbd85svjQbJ8GyD", "base58");
+        return r.ok && r.ix === "sell" && r.amount === "100" && r.limit === "200";
+      })()],
+      ["truncated flagged", (function () {
+        var r = D.decodeText("Dbi2pQ3nu6f2xpBYgg9zPq", "base58");
+        return !r.ok && r.layout === "truncated" && !!r.error;
+      })()]
+    ];
+    var pass = 0, h = "";
+    cases.forEach(function (c) { if (c[1]) pass++; h += (c[1] ? '<span class="ok">PASS</span>' : '<span class="err">FAIL</span>') + " " + esc(c[0]) + "<br>"; });
+    document.getElementById("testOut").innerHTML = h + "<b>" + pass + "/" + cases.length + " passed.</b>";
+  }
+  document.getElementById("btnDecode").onclick = doDecode;
+  document.getElementById("btnTest").onclick = doTest;
+  document.getElementById("btnS1").onclick = function () {
+    document.getElementById("inp").value = "AJTQ2h9DXrBj4aok4gYm2HMBsTBEaLkwH"; doDecode();
+  };
+  document.getElementById("btnS2").onclick = function () {
+    document.getElementById("inp").value = "48CS5rNxJb99EyFoQFXVSj2oKg8ZbZa215Wp"; doDecode();
+  };
+  document.getElementById("btnS3").onclick = function () {
+    document.getElementById("inp").value = "23s1EunhJwrwGzc3TznQ34E79Me5dY7A2ESwhdL"; doDecode();
+  };
+})();
+</script>
+</body>
+</html>
