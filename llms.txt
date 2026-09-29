@@ -1,0 +1,7 @@
+# pumpfun-buy-decoder
+
+> Version-tolerant pump.fun buy instruction decoder — 100% static, no CDN, no RPC.
+
+- Site: https://visawestern.github.io/pumpfun-buy-decoder/
+- Static demo, no backend. Open index.html in a browser.
+- License: see LICENSE. Source: https://github.com/visawestern/pumpfun-buy-decoder

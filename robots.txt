@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://visawestern.github.io/pumpfun-buy-decoder/sitemap.xml
